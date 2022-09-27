@@ -1,0 +1,461 @@
+---
+title: "Seurat - Exploratory workflow combining hiPSC from all runs"
+output:
+  html_document:
+    keep_md: true
+    smart: false
+    toc: true
+    toc_float: true
+    theme: united
+date: 'Compiled: `r format(Sys.Date(), "%B %d, %Y")`'
+---
+***
+
+
+## Resources
+* https://satijalab.org/seurat/articles/pbmc3k_tutorial.html
+
+## Load libraries
+```{r, message=FALSE}
+## Libraries
+suppressMessages(library(gridExtra))
+suppressMessages(library(ggplot2))
+suppressMessages(library(Seurat))
+suppressMessages(library(ggplot2))
+suppressMessages(library(plotly))
+suppressMessages(library(dplyr))
+# suppressMessages(library(genefilter))
+suppressMessages(library(gplots))
+suppressMessages(library(future))
+suppressMessages(library(SeuratWrappers))
+suppressMessages(library(stringr))
+suppressMessages(library(gprofiler2))
+
+## We can use multiple cores for some functions, see: https://satijalab.org/seurat/v3.2/future_vignette.html
+# plan("multiprocess", workers = 4)
+# plan()
+
+## This is to resolve the following erros message from NormalizeData: Error in getGlobalsAndPackages(expr, envir = envir, globals = globals) : 
+##   The total size of the 16 globals that need to be exported for the future expression (‘FUN()’) is 761.89 MiB. This exceeds the maximum allowed size of 500.00 MiB (option 'future.globals.maxSize'). The three largest globals are ‘object’ (761.32 MiB of class ‘S4’), ‘as’ (228.67 KiB of class ‘function’) and ‘.asCoerceMethod’ (80.58 KiB of class ‘function’).
+ 
+options(future.globals.maxSize= 1991289600)
+
+# A list of cell cycle markers, from Tirosh et al, 2015, is loaded with Seurat.
+# We can segregate this list into markers of G2/M phase and markers of S phase
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+
+outputDir  = getwd()
+```
+
+## Load seurat objects from all runs
+```{r}
+batch_1 <- readRDS("/path/to/split_dataset/hiPSC.rds")
+batch_2_A <- readRDS("/path/to/demultiplex_0H_A/singlets_hiPSC.rds")
+batch_2_B <- readRDS("/path/to/demultiplex_0H_B/singlets_hiPSC.rds")
+```
+
+## Add run id
+```{r}
+batch_2_A[["run"]] <- "sample_0H_A"
+batch_2_B[["run"]] <- "sample_0H_B"
+```
+
+
+## Assign a meaningful sample ID
+* After merging, all sample IDs will be in the sample_name slot
+```{r}
+sample_name <- batch_1[['calledS']]
+sample_name[sample_name=="SID03"] <- "iPSC_20_6_4"
+sample_name[sample_name=="SID05"] <- "iPSC_54_3"
+sample_name[sample_name=="SID07"] <- "iPSC_72_1"
+sample_name[sample_name=="SID09"] <- "iPSC_99_4"
+batch_1[['sample_name']] <- sample_name
+```
+
+## Create Seruat objects and merge
+```{r}
+object <- merge(x = batch_1,
+                y = c(batch_2_A, batch_2_B),
+                add.cell.ids = c("batch_1", "batch_2_A", "batch_2_B"))
+Idents(object) <- "hiPSC"
+object
+```
+
+## QC and selecting cells for further analysis
+* Seurat allows you to easily explore QC metrics and filter cells based on any user-defined criteria. A few QC metrics commonly used by the community include
+* The number of unique genes detected in each cell.
+  * Low-quality cells or empty droplets will often have very few genes
+  * Cell doublets or multiplets may exhibit an aberrantly high gene count
+    Similarly, the total number of molecules detected within a cell (correlates strongly with unique genes)
+* The percentage of reads that map to the mitochondrial genome
+  * Low-quality / dying cells often exhibit extensive mitochondrial contamination
+```{r}
+object[["percent.mt"]] <- PercentageFeatureSet(object, 
+                                               pattern = "^MT-")
+p1 <- VlnPlot(object, 
+             features = "nFeature_RNA", 
+             ncol = 1,
+             pt.size = 0,
+             group.by = "run")
+p1 <- p1 + geom_jitter(size = 0.01, alpha = 0.1) + ylim(0, NA) + theme(legend.position = "none")
+p2 <- VlnPlot(object, 
+             features = "nCount_RNA", 
+             ncol = 1,
+             pt.size = 0,
+             group.by = "run")
+p2 <- p2 + geom_jitter(size = 0.01, alpha = 0.1) + ylim(0, NA) + theme(legend.position = "none")
+p3 <- VlnPlot(object, 
+              features = "percent.mt", 
+              ncol = 1,
+              pt.size = 0,
+             group.by = "run")
+p3 <- p3 + geom_jitter(size = 0.01, alpha = 0.1) + ylim(0, NA) + theme(legend.position = "none")
+grid.arrange(p1, p2, p3, ncol=3)
+FeatureScatter(object, 
+               feature1 = "nCount_RNA", 
+               feature2 = "percent.mt")
+FeatureScatter(object, 
+               feature1 = "nCount_RNA", 
+               feature2 = "nFeature_RNA")
+p1 <- VlnPlot(object, 
+             features = "nFeature_RNA", 
+             ncol = 1,
+             pt.size = 0,
+             group.by = "doublet")
+p1 <- p1 + geom_jitter(size = 0.01, alpha = 0.1) + ylim(0, NA) + theme(legend.position = "none")
+p2 <- VlnPlot(object, 
+             features = "nCount_RNA", 
+             ncol = 1,
+             pt.size = 0,
+             group.by = "doublet")
+p2 <- p2 + geom_jitter(size = 0.01, alpha = 0.1) + ylim(0, NA) + theme(legend.position = "none")
+grid.arrange(p1, p2, ncol=2)
+
+```
+
+## Filtering (QC)
+```{r}
+object <- subset(object, subset = nFeature_RNA > 2000 & nFeature_RNA < 7000 & nCount_RNA < 100000 & percent.mt < 10 & percent.mt > 0.1)
+VlnPlot(object, 
+        features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), 
+        pt.size = 0,
+        ncol = 3)
+object
+```
+
+## Count cells 
+```{r}
+table(object[["run"]])
+```
+
+```{r}
+table(object[["sample_name"]])
+```
+
+## Normalizing the data
+After removing unwanted cells from the dataset, the next step is to normalize the data. By default, we employ a global-scaling normalization method “LogNormalize” that normalizes the feature expression measurements for each cell by the total expression, multiplies this by a scale factor and log-transforms the result. 
+```{r}
+object <- NormalizeData(object, 
+                        normalization.method = "LogNormalize", 
+                        scale.factor = 100000)
+```
+
+## Dissociation genes on normalizeds data
+* Calculate the expression of dissociation genes as a fraction of total expression (for details see 10.1038/nmeth.4437)
+* We calculate it on normalized counts
+```{r}
+genesChrom <- c("Actg1__chr11", "Ankrd1__chr19", "Arid5a__chr1", "Atf3__chr1", "Atf4__chr15", 
+    "Bag3__chr7", "Bhlhe40__chr6", "Brd2__chr17", "Btg1__chr10", "Btg2__chr1", "Ccnl1__chr3", 
+    "Ccrn4l__chr3", "Cebpb__chr2", "Cebpd__chr16", "Cebpg__chr7", "Csrnp1__chr9", 
+    "Cxcl1__chr5", "Cyr61__chr3", "Dcn__chr10", "Ddx3x__chrX", "Ddx5__chr11", "Des__chr1", 
+    "Dnaja1__chr4", "Dnajb1__chr8", "Dnajb4__chr3", "Dusp1__chr17", "Dusp8__chr7", 
+    "Egr1__chr18", "Egr2__chr10", "Eif1__chr11", "Eif5__chr12", "Erf__chr7", "Errfi1__chr4", 
+    "Fam132b__chr1", "Fos__chr12", "Fosb__chr7", "Fosl2__chr5", "Gadd45a__chr6", 
+    "Gcc1__chr6", "Gem__chr4", "H3f3b__chr11", "Hipk3__chr2", "Hsp90aa1__chr12", 
+    "Hsp90ab1__chr17", "Hspa1a__chr17", "Hspa1b__chr17", "Hspa5__chr2", "Hspa8__chr9", 
+    "Hspb1__chr5", "Hsph1__chr5", "Id3__chr4", "Idi1__chr13", "Ier2__chr8", "Ier3__chr17", 
+    "Ifrd1__chr12", "Il6__chr5", "Irf1__chr11", "Irf8__chr8", "Itpkc__chr7", "Jun__chr4", 
+    "Junb__chr8", "Jund__chr8", "Klf2__chr8", "Klf4__chr4", "Klf6__chr13", "Klf9__chr19", 
+    "Litaf__chr16", "Lmna__chr3", "Maff__chr15", "Mafk__chr5", "Mcl1__chr3", "Midn__chr10", 
+    "Mir22hg__chr11", "Mt1__chr8", "Mt2__chr8", "Myadm__chr7", "Myc__chr15", "Myd88__chr9", 
+    "Nckap5l__chr15", "Ncoa7__chr10", "Nfkbia__chr12", "Nfkbiz__chr16", "Nop58__chr1", 
+    "Nppc__chr1", "Nr4a1__chr15", "Odc1__chr12", "Osgin1__chr8", "Oxnad1__chr14", 
+    "Pcf11__chr7", "Pde4b__chr4", "Per1__chr11", "Phlda1__chr10", "Pnp__chr14", "Pnrc1__chr4", 
+    "Ppp1cc__chr5", "Ppp1r15a__chr7", "Pxdc1__chr13", "Rap1b__chr10", "Rassf1__chr9", 
+    "Rhob__chr12", "Rhoh__chr5", "Ripk1__chr13", "Sat1__chrX", "Sbno2__chr10", "Sdc4__chr2", 
+    "Serpine1__chr5", "Skil__chr3", "Slc10a6__chr5", "Slc38a2__chr15", "Slc41a1__chr1", 
+    "Socs3__chr11", "Sqstm1__chr11", "Srf__chr17", "Srsf5__chr12", "Srsf7__chr17", 
+    "Stat3__chr11", "Tagln2__chr1", "Tiparp__chr3", "Tnfaip3__chr10", "Tnfaip6__chr2", 
+    "Tpm3__chr3", "Tppp3__chr8", "Tra2a__chr6", "Tra2b__chr16", "Trib1__chr15", "Tubb4b__chr2", 
+    "Tubb6__chr18", "Ubc__chr5", "Usp2__chr9", "Wac__chr18", "Zc3h12a__chr4", "Zfand5__chr19", 
+    "Zfp36__chr7", "Zfp36l1__chr12", "Zfp36l2__chr17", "Zyx__chr6", "Gadd45g__chr13", 
+    "Hspe1__chr1", "Ier5__chr1", "Kcne4__chr1")
+
+genes <- sapply(genesChrom, function(x) {
+    toupper(strsplit(x, "__")[[1]][1])
+})
+
+Data <- as.data.frame(as.matrix(GetAssayData(object = object)))
+write.table(genes, paste0(outputDir, "/mouseDissocGenes.tsv"), sep = "\t", quote = FALSE, 
+    row.names = FALSE)
+
+## Remove mouse only genes and put the corresponding human
+genes <- genes[!genes %in% c("CCRN4L", "MT1", "MT2")]
+genes <- c(genes, "NOCT", "MT1A", "MT2A")
+cat("Genes from mouse we miss in human:\n")
+unname(genes[!genes %in% row.names(Data)])
+## Calculate the percentage of UMIs maping on dissociation genes
+totalSum <- Matrix::colSums(GetAssayData(object = object))
+selection <- Data[genes, ]
+selection[is.na(selection)] <- 0
+dissociationSums <- colSums(selection)
+countSums <- merge(totalSum, dissociationSums, by = "row.names", all = TRUE, sort = FALSE)
+rownames(countSums) <- countSums$Row.names
+countSums <- countSums[-1]
+colnames(countSums) <- c("totalCount", "dissociationCounts")
+countSums$percentage <- countSums$dissociationCounts/countSums$totalCount
+## Save in meta.data of object
+object[["percent.dissoc"]] <- countSums$percentage
+
+## Draw histogram for all samples
+percentages <- object$percent.dissoc
+hist(percentages, breaks = 100, col = "lightgrey", main = paste("Expression dissociation-affected genes"), 
+    xlab = "Ratio of dissociation-affected genes to total gene count", ylab = "Number of cells", 
+    xlim = c(0, 0.2))
+
+## Remove object to free up mem
+rm(Data)
+```
+
+## Keep cells with dissociation percentages below the threshold of 6%
+```{r}
+object <- subset(x = object, subset = percent.dissoc < 0.06)
+object
+```
+
+## Identification of highly variable features
+* We next calculate a subset of features that exhibit high cell-to-cell variation in the dataset (i.e, they are highly expressed in some cells, and lowly expressed in others). We and others have found that focusing on these genes in downstream analysis helps to highlight biological signal in single-cell datasets.
+
+* Our procedure in Seurat is described in detail here, and improves on previous versions by directly modeling the mean-variance relationship inherent in single-cell data, and is implemented in the FindVariableFeatures() function. By default, we return 2,000 features per dataset. These will be used in downstream analysis, like PCA.
+```{r}
+object <- FindVariableFeatures(object, 
+                               selection.method = "vst", 
+                               nfeatures = 2000)
+
+# Identify the 10 most highly variable genes
+top10 <- head(VariableFeatures(object), 10)
+
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(object)
+LabelPoints(plot = plot1, points = top10, repel = TRUE)
+```
+
+## Scaling the data 
+Next, we apply a linear transformation (‘scaling’) that is a standard pre-processing step prior to dimensional reduction techniques like PCA. The ScaleData() function:
+* Shifts the expression of each gene, so that the mean expression across cells is 0
+* Scales the expression of each gene, so that the variance across cells is 1. This step gives equal weight in downstream analyses, so that highly-expressed genes do not dominate
+```{r}
+all.genes <- rownames(object)
+object <- ScaleData(object, 
+                    features = all.genes)
+```
+
+## Linear dimensional reduction
+Next we perform PCA on the scaled data. By default, only the previously determined variable features are used as input, but can be defined using features argument if you wish to choose a different subset.
+```{r}
+object <- RunPCA(object, 
+                 features = VariableFeatures(object = object))
+# Examine and visualize PCA results a few different ways
+VizDimLoadings(object, 
+               dims = 1:2, 
+               reduction = "pca")
+DimPlot(object, 
+        reduction = "pca")
+```
+
+## Elbow plot
+To overcome the extensive technical noise in any single feature for scRNA-seq data, Seurat clusters cells based on their PCA scores, with each PC essentially representing a ‘metafeature’ that combines information across a correlated feature set. The top principal components therefore represent a robust compression of the dataset. However, how many components should we choose to include? 10? 20? 100?
+
+An alternative heuristic method generates an ‘Elbow plot’: a ranking of principle components based on the percentage of variance explained by each one (ElbowPlot() function). In this case, we can observe an ‘elbow’ around PC15-16, suggesting that the majority of true signal is captured in the first 15 PCs.
+```{r}
+ElbowPlot(object)
+```
+
+## Cluster the cells
+Seurat applies a graph-based clustering approach, building upon initial strategies in (Macosko et al). Importantly, the distance metric which drives the clustering analysis (based on previously identified PCs) remains the same. However, our approach to partitioning the cellular distance matrix into clusters has dramatically improved. Our approach was heavily inspired by recent manuscripts which applied graph-based clustering approaches to scRNA-seq data [SNN-Cliq, Xu and Su, Bioinformatics, 2015] and CyTOF data [PhenoGraph, Levine et al., Cell, 2015]. Briefly, these methods embed cells in a graph structure - for example a K-nearest neighbor (KNN) graph, with edges drawn between cells with similar feature expression patterns, and then attempt to partition this graph into highly interconnected ‘quasi-cliques’ or ‘communities’.
+
+As in PhenoGraph, we first construct a KNN graph based on the euclidean distance in PCA space, and refine the edge weights between any two cells based on the shared overlap in their local neighborhoods (Jaccard similarity). This step is performed using the FindNeighbors() function, and takes as input the previously defined dimensionality of the dataset (first 10 PCs).
+```{r}
+object <- FindNeighbors(object, 
+                        dims = 1:15)
+object <- FindClusters(object, 
+                       resolution = 0.3)
+```
+
+## Run non-linear dimensional reduction (UMAP)
+Seurat offers several non-linear dimensional reduction techniques, such as tSNE and UMAP, to visualize and explore these datasets. The goal of these algorithms is to learn the underlying manifold of the data in order to place similar cells together in low-dimensional space. Cells within the graph-based clusters determined above should co-localize on these dimension reduction plots. As input to the UMAP and tSNE, we suggest using the same PCs as input to the clustering analysis.
+```{r}
+object <- RunUMAP(object, dims = 1:15)
+DimPlot(object, 
+        reduction = "umap")
+DimPlot(object, 
+       reduction = "umap",
+       group.by = "run")
+DimPlot(object, 
+       reduction = "umap",
+       group.by = "sample_name")
+saveRDS(object = object, file = "hiPSC_complete.rds")
+```
+
+## Finding differentially expressed features
+Seurat can help you find markers that define clusters via differential expression. With settings used below, it identifies positive only markers of a single cluster (specified in ident.1), compared to all other cells. FindAllMarkers() automates this process for all clusters, but you can also test groups of clusters vs. each other, or against all cells.
+
+The min.pct argument requires a feature to be detected at a minimum percentage in either of the two groups of cells, and the thresh.test argument requires a feature to be differentially expressed (on average) by some amount between the two groups. You can set both of these to 0, but with a dramatic increase in time - since this will test a large number of features that are unlikely to be highly discriminatory. As another option to speed up these computations, max.cells.per.ident can be set. This will downsample each identity class to have no more cells than whatever this is set to. While there is generally going to be a loss in power, the speed increases can be significant and the most highly differentially expressed features will likely still rise to the top.
+```{r}
+markers <- FindAllMarkers(object,
+                          only.pos = TRUE,
+                          min.pct = 0.25,
+                          logfc.threshold = 0.25)
+markersPath = "markers.tsv"
+write.table(x = markers,
+            file = markersPath,
+            sep = "\t",
+            quote = FALSE,
+            row.names = FALSE)
+markers %>%
+    group_by(cluster) %>%
+    slice_max(n = 4, order_by = avg_log2FC)
+
+filtered_markers <- markers %>% filter(pct.1 > 0.6 & p_val_adj < 0.05)
+write.table(x = filtered_markers,
+            file = paste0(outputDir, "/filtered_markers.tsv"),
+            row.names = FALSE)
+
+topMarkers <- markers %>%
+              group_by(cluster) %>%
+              top_n(30, avg_log2FC)
+topMarkersPath = "topMarkers.tsv"
+write.table(x = topMarkers,
+            file = topMarkersPath,
+            sep = "\t",
+            quote = FALSE,
+            row.names = FALSE)
+```
+
+## gprofiler on DEGs
+```{r}
+query_list <- list()
+clusters <- unique(markers$cluster)
+for (cl in clusters) {
+    cluster <- paste0("cl_", cl)
+    query_list[[cluster]] <- markers %>%
+        filter(cluster == cl) %>%
+        arrange(p_val_adj) %>%
+        dplyr::select(gene)
+}
+
+gost_results <- gost(query = query_list, organism = "hsapiens", ordered_query = TRUE,
+    user_threshold = 0.05, domain_scope = "annotated", sources = c("GO:BP", "KEGG"))
+## c('CO:MF', 'GO:CC', 'GO:BP', 'KEGG', 'REAC')
+
+## Drop parents column
+terms_table <- gost_results$result %>%
+    dplyr::select(-parents)
+gprofilerPath = paste0(outputDir, "/gprofiler_degs.tsv")
+write.table(x = terms_table,
+            file = gprofilerPath,
+            sep = "\t",
+            quote = FALSE,
+            row.names = FALSE)
+```
+
+## Batch corrrect MNN between sample names
+```{r}
+object <- RunFastMNN(object.list = SplitObject(object, split.by = "sample_name"))
+```
+
+## Redo clustering, UMAP calc with mnn correction
+```{r}
+object <- FindNeighbors(object, reduction = "mnn", dims = c(1:15))
+object <- FindClusters(object, resolution = 0.3)
+object <- RunUMAP(object, reduction = "mnn", dims = c(1:15))
+DimPlot(object, 
+        reduction = "umap")
+DimPlot(object, 
+       reduction = "umap",
+       group.by = "run")
+DimPlot(object, 
+       reduction = "umap",
+       group.by = "sample_name")
+saveRDS(object = object, file = "hiPSC_complete_mnn.rds")
+```
+
+
+## Finding differentially expressed features
+Seurat can help you find markers that define clusters via differential expression. With settings used below, it identifies positive only markers of a single cluster (specified in ident.1), compared to all other cells. FindAllMarkers() automates this process for all clusters, but you can also test groups of clusters vs. each other, or against all cells.
+
+The min.pct argument requires a feature to be detected at a minimum percentage in either of the two groups of cells, and the thresh.test argument requires a feature to be differentially expressed (on average) by some amount between the two groups. You can set both of these to 0, but with a dramatic increase in time - since this will test a large number of features that are unlikely to be highly discriminatory. As another option to speed up these computations, max.cells.per.ident can be set. This will downsample each identity class to have no more cells than whatever this is set to. While there is generally going to be a loss in power, the speed increases can be significant and the most highly differentially expressed features will likely still rise to the top.
+```{r}
+markers <- FindAllMarkers(object,
+                          only.pos = TRUE,
+                          min.pct = 0.25,
+                          logfc.threshold = 0.25)
+markersPath = "markers_mnn.tsv"
+write.table(x = markers,
+            file = markersPath,
+            sep = "\t",
+            quote = FALSE,
+            row.names = FALSE)
+markers %>%
+    group_by(cluster) %>%
+    slice_max(n = 4, order_by = avg_log2FC)
+
+filtered_markers <- markers %>% filter(pct.1 > 0.6 & p_val_adj < 0.05)
+write.table(x = filtered_markers,
+            file = paste0(outputDir, "/filtered_markers_mnn.tsv"),
+            row.names = FALSE)
+
+topMarkers <- markers %>%
+              group_by(cluster) %>%
+              top_n(30, avg_log2FC)
+topMarkersPath = "topMarkers_mnn.tsv"
+write.table(x = topMarkers,
+            file = topMarkersPath,
+            sep = "\t",
+            quote = FALSE,
+            row.names = FALSE)
+```
+
+## gprofiler on DEGs
+```{r}
+query_list <- list()
+clusters <- unique(markers$cluster)
+for (cl in clusters) {
+    cluster <- paste0("cl_", cl)
+    query_list[[cluster]] <- markers %>%
+        filter(cluster == cl) %>%
+        arrange(p_val_adj) %>%
+        dplyr::select(gene)
+}
+
+gost_results <- gost(query = query_list, organism = "hsapiens", ordered_query = TRUE,
+    user_threshold = 0.05, domain_scope = "annotated", sources = c("GO:BP", "KEGG"))
+## c('CO:MF', 'GO:CC', 'GO:BP', 'KEGG', 'REAC')
+
+## Drop parents column
+terms_table <- gost_results$result %>%
+    dplyr::select(-parents)
+gprofilerPath = paste0(outputDir, "/gprofiler_degs_mnn.tsv")
+write.table(x = terms_table,
+            file = gprofilerPath,
+            sep = "\t",
+            quote = FALSE,
+            row.names = FALSE)
+```
+
+### Session Info
+```{r}
+sessionInfo()
+```
+
