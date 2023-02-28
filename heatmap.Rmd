@@ -1,0 +1,143 @@
+---
+title: "Average gene expression PGC clusters and combine in heatmap"
+output:
+  html_document:
+    keep_md: true
+    smart: false
+    theme: united
+date: 'Compiled: `r format(Sys.Date(), "%B %d, %Y")`'
+---
+***
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  cache.lazy = FALSE,
+  tidy = TRUE
+)
+```
+
+## Libraries
+```{r, message=FALSE}
+suppressMessages(library(ComplexHeatmap))
+suppressMessages(library(dplyr))
+suppressMessages(library(Seurat))
+
+outputDir  = getwd()
+```
+
+## Create list of markers genes
+```{r}
+genes_list <- list("PGC"=c("ALPL", "CD38", "CXCR4", "EOMES", "GATA3", "KIT", "NANOS3", "PDPN", "PRDM1", "SALL4", "SFRP2", "SOX17", "TBXT", "TCL1A", "TFAP2C", "DMRT1", "DPPA3", "ITGA6"),
+              "pluripotency"=c("DNMT1", "DNMT3A", "DNMT3B", "DPPA4", "KLF4", "LIN28A", "NANOG", "POU5F1", "SOX2", "UHRF1"),
+              "mature_germ"=c("DAZL", "DDX4", "DLK1"),
+              "amniotic_mesoderm"=c("BMP4", "COL3A1", "COL6A3", "FOXF1", "GATA6", "PDGFRA", "RSPO2", "SNAI2"),
+              "amniotic_ectoderm"=c("EPAS1", "GABRP", "GATA3", "IGFBP3", "IGFBP7", "ISL1", "KRT7", "TFAP2A", "VTCN1", "WNT6"),
+              "sex_specific"=c("SYCP3", "STRA8", "ZGLP1", "MAGEA3", "MAGEB2", "PAGE5", "VCX3A"),
+              "housekeeping"=c("GAPDH", "TUBB"))
+genes <- unlist(genes_list)
+length(genes)
+```
+
+
+## Read datasets, subset genes and clusters of interest, Calculate average gene expression 
+```{r}
+## Function to extract the count table of desired cells and genes, calculate mean gene values and save as a DF
+Get_cluster_mean <- function(seurat_obj, genes, cl_ident, name) {
+  print(sum(genes %in% rownames(seurat_obj)))
+  obj_subset <- subset(x=seurat_obj, idents=cl_ident)
+  counts <- GetAssayData(obj_subset[genes])
+  counts <- data.frame(rowMeans(counts))
+  colnames(counts) <- name
+  return(counts)
+}
+
+# hiPSC
+hiPSC <- readRDS("/path/to/hiPSC_complete_mnn.rds")
+hiPSC <- NormalizeData(object=hiPSC, 
+                       scale.factor=10e6)
+PGCLC_own <- Get_cluster_mean(seurat=hiPSC,
+                              genes=genes,
+                              cl_ident=3,
+                              name="PGCLC_own")
+
+# Chen
+chen <- readRDS("/path/to/UCLA2_hiPSC_mnn.rds")
+chen <- NormalizeData(object=chen, 
+                       scale.factor=10e6)
+print(sum(genes %in% rownames(chen)))
+obj_subset <- subset(x=chen, idents=5, subset=replicate!="hiPSC")
+counts <- GetAssayData(obj_subset[genes])
+counts <- data.frame(rowMeans(counts))
+colnames(counts) <- "PGCLC_chen"
+PGCLC_chen <- counts
+
+# Tyser
+tyser <- readRDS("/path/to/tyser.rds")
+tyser <- NormalizeData(object=tyser, 
+                       scale.factor=10e6)
+print(sum(genes %in% rownames(tyser)))
+obj_subset <- subset(x=tyser, subset=sub_cluster=="PGC")
+counts <- GetAssayData(obj_subset[genes])
+counts <- data.frame(rowMeans(counts))
+colnames(counts) <- "PGC_tyser"
+PGC_tyser <- counts
+
+# Zheng 
+zheng <- readRDS("/path/to/zheng_hiPSC_mnn.rds")
+zheng <- NormalizeData(object=zheng, 
+                       scale.factor=10e6)
+print(sum(genes %in% rownames(zheng)))
+obj_subset <- subset(x=zheng, subset=paper_clustering_zheng=="PGCLC")
+counts <- GetAssayData(obj_subset[genes])
+counts <- data.frame(rowMeans(counts))
+colnames(counts) <- "PGCLC_zheng"
+PGCLC_zheng <- counts
+
+## Li 
+li <- readRDS("/path/to/FGC.rds")
+li <- NormalizeData(object=li, 
+                       scale.factor=10e6)
+li <- li[,!is.na(li[['susana_clustering']])]
+print(sum(genes %in% rownames(li)))
+print(genes[!(genes %in% rownames(li))])
+print("T" %in% rownames(li))
+genes_mutated <- genes
+genes_mutated[genes_mutated=="TBXT"] <- "T"
+
+group_identity <- as.factor(li@meta.data$susana_clustering)
+counts <- GetAssayData(li[genes_mutated])
+# We replace TBXT with the previously used symbol "T"
+rownames(counts)[rownames(counts)=="T"] <- "TBXT"
+
+## Substiture cell ID with cluster ID
+colnames(counts) <- group_identity
+
+## Calculate Mean
+meanDF <- do.call(cbind, lapply(levels(group_identity), function(id){
+   group_counts <- counts[, colnames(counts) == id]
+   df <- data.frame( c = apply(group_counts, 1, mean))
+   colnames(df) <- id
+   return(df)
+}))
+colnames(meanDF) <- paste('li', colnames(meanDF), sep="-")
+
+l <- list(PGCLC_own, 
+          PGCLC_chen, 
+          PGCLC_zheng, 
+          PGC_tyser, 
+          meanDF)
+merged_counts <- Reduce(merge, lapply(l, function(x) data.frame(x, rn = row.names(x))))
+rownames(merged_counts) <- merged_counts$rn
+merged_counts <- merged_counts[-1]
+pdf('complex_heatmap_with_tyser.pdf')
+# heatmap.2(as.matrix(merged_counts), trace = "none")
+Heatmap(as.matrix(merged_counts),
+        row_names_gp = gpar(fontsize = 4),
+        column_names_gp = gpar(fontsize = 7),)
+dev.off()
+```
+
+### Session Info
+```{r}
+sessionInfo()
+```
