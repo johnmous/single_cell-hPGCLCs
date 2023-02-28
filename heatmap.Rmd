@@ -130,7 +130,6 @@ merged_counts <- Reduce(merge, lapply(l, function(x) data.frame(x, rn = row.name
 rownames(merged_counts) <- merged_counts$rn
 merged_counts <- merged_counts[-1]
 pdf('complex_heatmap_with_tyser.pdf')
-# heatmap.2(as.matrix(merged_counts), trace = "none")
 Heatmap(as.matrix(merged_counts),
         row_names_gp = gpar(fontsize = 4),
         column_names_gp = gpar(fontsize = 7),)
