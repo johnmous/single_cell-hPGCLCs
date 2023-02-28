@@ -3,8 +3,8 @@
 ## Running under: CentOS Stream 8
 ## 
 ## Matrix products: default
-## BLAS:   /exports/sasc/ioannis/miniconda3/envs/seuratV4/lib/libblas.so.3.8.0
-## LAPACK: /exports/sasc/ioannis/miniconda3/envs/seuratV4/lib/liblapack.so.3.8.0
+## BLAS:   .../libblas.so.3.8.0
+## LAPACK: .../liblapack.so.3.8.0
 ## 
 ## locale:
 ##  [1] LC_CTYPE=en_US.UTF-8    LC_NUMERIC=C            LC_TIME=C              
